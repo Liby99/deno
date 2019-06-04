@@ -23,8 +23,12 @@ std::string EncodeMessageAsJSON(v8::Local<v8::Context> context,
   v8::EscapableHandleScope handle_scope(isolate);
   v8::Context::Scope context_scope(context);
 
-  auto exception_str = message->Get();
-  auto script_resource_name = message->GetScriptResourceName();
+  v8::String::Utf8Value _exception_str(isolate, message->Get());
+  auto exception_str = std::string(*_exception_str);
+
+  v8::String::Utf8Value _script_resource_name(isolate, message->GetScriptResourceName());
+  auto script_resource_name = std::string(*_script_resource_name);
+
   auto start_position = message->GetStartPosition();
   auto end_position = message->GetEndPosition();
   auto error_level = message->ErrorLevel();
@@ -34,8 +38,7 @@ std::string EncodeMessageAsJSON(v8::Local<v8::Context> context,
   auto maybe_source_line = message->GetSourceLine(context);
   std::stringstream source_line;
   if (!maybe_source_line.IsEmpty()) {
-    v8::Local<v8::String> something = maybe_source_line.ToLocalChecked();
-    v8::String::Utf8Value value(something);
+    v8::String::Utf8Value value(isolate, maybe_source_line.ToLocalChecked());
     source_line << "\"sourceLine\": " << std::string(*value) << ",";
   }
 
@@ -57,61 +60,67 @@ std::string EncodeMessageAsJSON(v8::Local<v8::Context> context,
     end_column << "\"endColumn\": " << maybe_end_column.FromJust() << ",";
   }
 
-  // auto stack_trace = message->GetStackTrace();
-  // std::stringstream stack_trace_json;
-  // if (!stack_trace.IsEmpty()) {
-  //   stack_trace_json << "[";
-  //   uint32_t count = static_cast<uint32_t>(stack_trace->GetFrameCount());
-  //   for (uint32_t i = 0; i < count; ++i) {
-  //     auto frame = stack_trace->GetFrame(isolate, i);
+  auto stack_trace = message->GetStackTrace();
+  std::stringstream stack_trace_json;
+  if (!stack_trace.IsEmpty()) {
+    stack_trace_json << "[";
+    uint32_t count = static_cast<uint32_t>(stack_trace->GetFrameCount());
+    for (uint32_t i = 0; i < count; ++i) {
+      auto frame = stack_trace->GetFrame(isolate, i);
 
-  //     auto line = frame->GetLineNumber();
-  //     auto column = frame->GetColumn();
-  //     auto function_name = frame->GetFunctionName();
-  //     auto is_eval = frame->IsEval();
-  //     auto is_constructor = frame->IsConstructor();
-  //     auto is_wasm = frame->IsWasm();
+      v8::String::Utf8Value _function_name(isolate, frame->GetFunctionName());
+      auto function_name = std::string(*_function_name);
 
-  //     auto maybe_script_name = frame->GetScriptNameOrSourceURL();
-  //     auto script_name = maybe_script_name.IsEmpty() ? v8_str("<unknown>") : maybe_script_name;
+      auto line = frame->GetLineNumber();
+      auto column = frame->GetColumn();
+      auto is_eval = frame->IsEval();
+      auto is_constructor = frame->IsConstructor();
+      auto is_wasm = frame->IsWasm();
 
-  //     stack_trace_json << "{\
-  //       \"line\": " << line << ",\
-  //       \"column\": " << column << ",\
-  //       \"functionName\": \"" << function_name << "\",\
-  //       \"scriptName\": \"" << script_name << "\",\
-  //       \"isEval\": " << (is_eval ? "true" : "false") << ",\
-  //       \"isConstructor\": " << (is_constructor ? "true" : "false") << ",\
-  //       \"isWasm\": " << (is_wasm ? "true" : "false") << "\
-  //     }";
+      auto maybe_script_name = frame->GetScriptNameOrSourceURL();
+      auto temp = maybe_script_name.IsEmpty() ? v8_str("<unknown>") : maybe_script_name;
+      v8::String::Utf8Value _script_name(isolate, temp);
+      auto script_name = std::string(*_script_name);
 
-  //     if (i < count - 1) {
-  //       stack_trace_json << ",";
-  //     }
-  //   }
-  //   stack_trace_json << "]";
-  // } else {
+      stack_trace_json << "{\
+        \"line\": " << line << ",\
+        \"column\": " << column << ",\
+        \"functionName\": \"" << function_name << "\",\
+        \"scriptName\": \"" << script_name << "\",\
+        \"isEval\": " << (is_eval ? "true" : "false") << ",\
+        \"isConstructor\": " << (is_constructor ? "true" : "false") << ",\
+        \"isWasm\": " << (is_wasm ? "true" : "false") << "\
+      }";
 
-  //   std::stringstream line;
-  //   if (!maybe_line_number.IsJust()) {
-  //     line << "\"line\": " << maybe_line_number.FromJust() << ",";
-  //   }
+      if (i < count - 1) {
+        stack_trace_json << ",";
+      }
+    }
+    stack_trace_json << "]";
+  } else {
 
-  //   std::stringstream column;
-  //   if (!maybe_start_column.IsJust()) {
-  //     column << "\"column\": " << maybe_start_column.FromJust() << ",";
-  //   }
+    std::stringstream line;
+    if (!maybe_line_number.IsJust()) {
+      line << "\"line\": " << maybe_line_number.FromJust() << ",";
+    }
 
-  //   auto script_str = v8::JSON::Stringify(context, message->GetScriptResourceName()).ToLocalChecked();
+    std::stringstream column;
+    if (!maybe_start_column.IsJust()) {
+      column << "\"column\": " << maybe_start_column.FromJust() << ",";
+    }
 
-  //   stack_trace_json << "[{" << line << column << "\"scriptName\": \"" << script_str << "\"}]";
-  // }
+    auto script_str = v8::JSON::Stringify(context, message->GetScriptResourceName()).ToLocalChecked();
+    v8::String::Utf8Value _script_str(isolate, script_str);
+    auto script_name = std::string(*_script_str);
+
+    stack_trace_json << "[{" << line.str() << column.str() << "\"scriptName\": \"" << script_name << "\"}]";
+  }
 
   std::stringstream result;
-  result << "{\"" <<
-    // \"message\": \"" << exception_str << "\",
-    // "\"scriptResourceName\": \"" << script_resource_name << "\",
-    "\"startPosition\": " << start_position << ",\
+  result << "{\
+    \"message\": \"" << exception_str << "\",\
+    \"scriptResourceName\": \"" << script_resource_name << "\",\
+    \"startPosition\": " << start_position << ",\
     \"endPosition\": " << end_position << ",\
     \"errorLevel\": " << error_level << ",\
     \"isSharedCrossOrigin\": " << (is_shared_cross_origin ? "true" : "false") << ",\
@@ -120,7 +129,7 @@ std::string EncodeMessageAsJSON(v8::Local<v8::Context> context,
     line_number.str() <<
     start_column.str() <<
     end_column.str() <<
-    // "\"frames\": " << stack_trace_json << "\"" <<
+    "\"frames\": " << stack_trace_json.str() << "\"" <<
   "}";
   return result.str();
 }
