@@ -12,10 +12,10 @@ void ReplaceAll(std::string &str, const std::string &from, const std::string &to
   }
 }
 
-// std::string EscapeString(std::string str) {
-//   ReplaceAll(str, "\"", "\\\"");
-//   return str;
-// }
+std::string EscapeString(std::string str) {
+  ReplaceAll(str, "\"", "\\\"");
+  return str;
+}
 
 std::string EncodeMessageAsJSON(v8::Local<v8::Context> context,
                                 v8::Local<v8::Message> message) {
@@ -39,7 +39,7 @@ std::string EncodeMessageAsJSON(v8::Local<v8::Context> context,
   std::stringstream source_line;
   if (!maybe_source_line.IsEmpty()) {
     v8::String::Utf8Value value(isolate, maybe_source_line.ToLocalChecked());
-    source_line << "\"sourceLine\": " << std::string(*value) << ",";
+    source_line << "\"sourceLine\": \"" << EscapeString(std::string(*value)) << "\",";
   }
 
   auto maybe_line_number = message->GetLineNumber(context);
@@ -51,12 +51,12 @@ std::string EncodeMessageAsJSON(v8::Local<v8::Context> context,
   auto maybe_start_column = message->GetStartColumn(context);
   std::stringstream start_column;
   if (maybe_start_column.IsJust()) {
-    start_column << "\"sourceLine\": " << maybe_start_column.FromJust() << ",";
+    start_column << "\"startColumn\": " << maybe_start_column.FromJust() << ",";
   }
 
   auto maybe_end_column = message->GetEndColumn(context);
   std::stringstream end_column;
-  if (!maybe_end_column.IsJust()) {
+  if (maybe_end_column.IsJust()) {
     end_column << "\"endColumn\": " << maybe_end_column.FromJust() << ",";
   }
 
@@ -113,7 +113,11 @@ std::string EncodeMessageAsJSON(v8::Local<v8::Context> context,
     v8::String::Utf8Value _script_str(isolate, script_str);
     auto script_name = std::string(*_script_str);
 
-    stack_trace_json << "[{" << line.str() << column.str() << "\"scriptName\": \"" << script_name << "\"}]";
+    stack_trace_json << "[{" <<
+      line.str() <<
+      column.str() <<
+      "\"scriptName\": \"" << script_name << "\"\
+    }]";
   }
 
   std::stringstream result;
@@ -124,13 +128,16 @@ std::string EncodeMessageAsJSON(v8::Local<v8::Context> context,
     \"endPosition\": " << end_position << ",\
     \"errorLevel\": " << error_level << ",\
     \"isSharedCrossOrigin\": " << (is_shared_cross_origin ? "true" : "false") << ",\
-    \"isOpaque\"" << (is_opaque ? "true" : "false") << "," <<
+    \"isOpaque\": " << (is_opaque ? "true" : "false") << "," <<
     source_line.str() <<
     line_number.str() <<
     start_column.str() <<
     end_column.str() <<
-    "\"frames\": " << stack_trace_json.str() << "\"" <<
+    "\"frames\": " << stack_trace_json.str() <<
   "}";
+
+  // std::cout << result.str() << std::endl;
+
   return result.str();
 }
 
