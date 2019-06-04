@@ -4,166 +4,130 @@
 
 namespace deno {
 
-v8::Local<v8::Object> EncodeMessageAsObject(v8::Local<v8::Context> context,
-                                            v8::Local<v8::Message> message) {
-  auto* isolate = context->GetIsolate();
-  v8::EscapableHandleScope handle_scope(isolate);
-  v8::Context::Scope context_scope(context);
-
-  auto stack_trace = message->GetStackTrace();
-
-  // Encode the exception into a JS object, which we will then turn into JSON.
-  auto json_obj = v8::Object::New(isolate);
-  auto exception_str = message->Get();
-  CHECK(json_obj->Set(context, v8_str("message"), exception_str).FromJust());
-
-  auto maybe_source_line = message->GetSourceLine(context);
-  if (!maybe_source_line.IsEmpty()) {
-    CHECK(json_obj
-              ->Set(context, v8_str("sourceLine"),
-                    maybe_source_line.ToLocalChecked())
-              .FromJust());
+void ReplaceAll(std::string &str, const std::string &from, const std::string &to) {
+  std::string::size_type pos = 0u;
+  while ((pos = str.find(from, pos)) != std::string::npos) {
+    str.replace(pos, from.length(), to);
+    pos += to.length();
   }
-
-  CHECK(json_obj
-            ->Set(context, v8_str("scriptResourceName"),
-                  message->GetScriptResourceName())
-            .FromJust());
-
-  auto maybe_line_number = message->GetLineNumber(context);
-  if (maybe_line_number.IsJust()) {
-    CHECK(json_obj
-              ->Set(context, v8_str("lineNumber"),
-                    v8::Integer::New(isolate, maybe_line_number.FromJust()))
-              .FromJust());
-  }
-
-  CHECK(json_obj
-            ->Set(context, v8_str("startPosition"),
-                  v8::Integer::New(isolate, message->GetStartPosition()))
-            .FromJust());
-
-  CHECK(json_obj
-            ->Set(context, v8_str("endPosition"),
-                  v8::Integer::New(isolate, message->GetEndPosition()))
-            .FromJust());
-
-  CHECK(json_obj
-            ->Set(context, v8_str("errorLevel"),
-                  v8::Integer::New(isolate, message->ErrorLevel()))
-            .FromJust());
-
-  auto maybe_start_column = message->GetStartColumn(context);
-  if (maybe_start_column.IsJust()) {
-    auto start_column =
-        v8::Integer::New(isolate, maybe_start_column.FromJust());
-    CHECK(
-        json_obj->Set(context, v8_str("startColumn"), start_column).FromJust());
-  }
-
-  auto maybe_end_column = message->GetEndColumn(context);
-  if (maybe_end_column.IsJust()) {
-    auto end_column = v8::Integer::New(isolate, maybe_end_column.FromJust());
-    CHECK(json_obj->Set(context, v8_str("endColumn"), end_column).FromJust());
-  }
-
-  CHECK(json_obj
-            ->Set(context, v8_str("isSharedCrossOrigin"),
-                  v8::Boolean::New(isolate, message->IsSharedCrossOrigin()))
-            .FromJust());
-
-  CHECK(json_obj
-            ->Set(context, v8_str("isOpaque"),
-                  v8::Boolean::New(isolate, message->IsOpaque()))
-            .FromJust());
-
-  v8::Local<v8::Array> frames;
-  if (!stack_trace.IsEmpty()) {
-    uint32_t count = static_cast<uint32_t>(stack_trace->GetFrameCount());
-    frames = v8::Array::New(isolate, count);
-
-    for (uint32_t i = 0; i < count; ++i) {
-      auto frame = stack_trace->GetFrame(isolate, i);
-      auto frame_obj = v8::Object::New(isolate);
-      CHECK(frames->Set(context, i, frame_obj).FromJust());
-      auto line = v8::Integer::New(isolate, frame->GetLineNumber());
-      auto column = v8::Integer::New(isolate, frame->GetColumn());
-      CHECK(frame_obj->Set(context, v8_str("line"), line).FromJust());
-      CHECK(frame_obj->Set(context, v8_str("column"), column).FromJust());
-      CHECK(frame_obj
-                ->Set(context, v8_str("functionName"), frame->GetFunctionName())
-                .FromJust());
-      // scriptName can be empty in special conditions e.g. eval
-      auto scriptName = frame->GetScriptNameOrSourceURL();
-      if (scriptName.IsEmpty()) {
-        scriptName = v8_str("<unknown>");
-      }
-      CHECK(
-          frame_obj->Set(context, v8_str("scriptName"), scriptName).FromJust());
-      CHECK(frame_obj
-                ->Set(context, v8_str("isEval"),
-                      v8::Boolean::New(isolate, frame->IsEval()))
-                .FromJust());
-      CHECK(frame_obj
-                ->Set(context, v8_str("isConstructor"),
-                      v8::Boolean::New(isolate, frame->IsConstructor()))
-                .FromJust());
-      CHECK(frame_obj
-                ->Set(context, v8_str("isWasm"),
-                      v8::Boolean::New(isolate, frame->IsWasm()))
-                .FromJust());
-    }
-  } else {
-    // No stack trace. We only have one stack frame of info..
-    frames = v8::Array::New(isolate, 1);
-
-    auto frame_obj = v8::Object::New(isolate);
-    CHECK(frames->Set(context, 0, frame_obj).FromJust());
-
-    auto line =
-        v8::Integer::New(isolate, message->GetLineNumber(context).FromJust());
-    auto column =
-        v8::Integer::New(isolate, message->GetStartColumn(context).FromJust());
-
-    CHECK(frame_obj->Set(context, v8_str("line"), line).FromJust());
-    CHECK(frame_obj->Set(context, v8_str("column"), column).FromJust());
-    CHECK(frame_obj
-              ->Set(context, v8_str("scriptName"),
-                    message->GetScriptResourceName())
-              .FromJust());
-  }
-
-  CHECK(json_obj->Set(context, v8_str("frames"), frames).FromJust());
-  json_obj = handle_scope.Escape(json_obj);
-  return json_obj;
 }
+
+// std::string EscapeString(std::string str) {
+//   ReplaceAll(str, "\"", "\\\"");
+//   return str;
+// }
 
 std::string EncodeMessageAsJSON(v8::Local<v8::Context> context,
                                 v8::Local<v8::Message> message) {
-  auto* isolate = context->GetIsolate();
-  v8::HandleScope handle_scope(isolate);
-  v8::Context::Scope context_scope(context);
-  auto json_obj = EncodeMessageAsObject(context, message);
-  auto json_string = v8::JSON::Stringify(context, json_obj).ToLocalChecked();
-  v8::String::Utf8Value json_string_(isolate, json_string);
-  return std::string(ToCString(json_string_));
-}
-
-v8::Local<v8::Object> EncodeExceptionAsObject(v8::Local<v8::Context> context,
-                                              v8::Local<v8::Value> exception) {
-  auto* isolate = context->GetIsolate();
+  auto *isolate = context->GetIsolate();
   v8::EscapableHandleScope handle_scope(isolate);
   v8::Context::Scope context_scope(context);
 
-  auto message = v8::Exception::CreateMessage(isolate, exception);
-  auto json_obj = EncodeMessageAsObject(context, message);
-  json_obj = handle_scope.Escape(json_obj);
-  return json_obj;
+  auto exception_str = message->Get();
+  auto script_resource_name = message->GetScriptResourceName();
+  auto start_position = message->GetStartPosition();
+  auto end_position = message->GetEndPosition();
+  auto error_level = message->ErrorLevel();
+  auto is_shared_cross_origin = message->IsSharedCrossOrigin();
+  auto is_opaque = message->IsOpaque();
+
+  auto maybe_source_line = message->GetSourceLine(context);
+  std::stringstream source_line;
+  if (!maybe_source_line.IsEmpty()) {
+    v8::Local<v8::String> something = maybe_source_line.ToLocalChecked();
+    v8::String::Utf8Value value(something);
+    source_line << "\"sourceLine\": " << std::string(*value) << ",";
+  }
+
+  auto maybe_line_number = message->GetLineNumber(context);
+  std::stringstream line_number;
+  if (maybe_line_number.IsJust()) {
+    line_number << "\"lineNumber\": " << maybe_line_number.FromJust() << ",";
+  }
+
+  auto maybe_start_column = message->GetStartColumn(context);
+  std::stringstream start_column;
+  if (maybe_start_column.IsJust()) {
+    start_column << "\"sourceLine\": " << maybe_start_column.FromJust() << ",";
+  }
+
+  auto maybe_end_column = message->GetEndColumn(context);
+  std::stringstream end_column;
+  if (!maybe_end_column.IsJust()) {
+    end_column << "\"endColumn\": " << maybe_end_column.FromJust() << ",";
+  }
+
+  // auto stack_trace = message->GetStackTrace();
+  // std::stringstream stack_trace_json;
+  // if (!stack_trace.IsEmpty()) {
+  //   stack_trace_json << "[";
+  //   uint32_t count = static_cast<uint32_t>(stack_trace->GetFrameCount());
+  //   for (uint32_t i = 0; i < count; ++i) {
+  //     auto frame = stack_trace->GetFrame(isolate, i);
+
+  //     auto line = frame->GetLineNumber();
+  //     auto column = frame->GetColumn();
+  //     auto function_name = frame->GetFunctionName();
+  //     auto is_eval = frame->IsEval();
+  //     auto is_constructor = frame->IsConstructor();
+  //     auto is_wasm = frame->IsWasm();
+
+  //     auto maybe_script_name = frame->GetScriptNameOrSourceURL();
+  //     auto script_name = maybe_script_name.IsEmpty() ? v8_str("<unknown>") : maybe_script_name;
+
+  //     stack_trace_json << "{\
+  //       \"line\": " << line << ",\
+  //       \"column\": " << column << ",\
+  //       \"functionName\": \"" << function_name << "\",\
+  //       \"scriptName\": \"" << script_name << "\",\
+  //       \"isEval\": " << (is_eval ? "true" : "false") << ",\
+  //       \"isConstructor\": " << (is_constructor ? "true" : "false") << ",\
+  //       \"isWasm\": " << (is_wasm ? "true" : "false") << "\
+  //     }";
+
+  //     if (i < count - 1) {
+  //       stack_trace_json << ",";
+  //     }
+  //   }
+  //   stack_trace_json << "]";
+  // } else {
+
+  //   std::stringstream line;
+  //   if (!maybe_line_number.IsJust()) {
+  //     line << "\"line\": " << maybe_line_number.FromJust() << ",";
+  //   }
+
+  //   std::stringstream column;
+  //   if (!maybe_start_column.IsJust()) {
+  //     column << "\"column\": " << maybe_start_column.FromJust() << ",";
+  //   }
+
+  //   auto script_str = v8::JSON::Stringify(context, message->GetScriptResourceName()).ToLocalChecked();
+
+  //   stack_trace_json << "[{" << line << column << "\"scriptName\": \"" << script_str << "\"}]";
+  // }
+
+  std::stringstream result;
+  result << "{\"" <<
+    // \"message\": \"" << exception_str << "\",
+    // "\"scriptResourceName\": \"" << script_resource_name << "\",
+    "\"startPosition\": " << start_position << ",\
+    \"endPosition\": " << end_position << ",\
+    \"errorLevel\": " << error_level << ",\
+    \"isSharedCrossOrigin\": " << (is_shared_cross_origin ? "true" : "false") << ",\
+    \"isOpaque\"" << (is_opaque ? "true" : "false") << "," <<
+    source_line.str() <<
+    line_number.str() <<
+    start_column.str() <<
+    end_column.str() <<
+    // "\"frames\": " << stack_trace_json << "\"" <<
+  "}";
+  return result.str();
 }
 
 std::string EncodeExceptionAsJSON(v8::Local<v8::Context> context,
                                   v8::Local<v8::Value> exception) {
-  auto* isolate = context->GetIsolate();
+  auto *isolate = context->GetIsolate();
   v8::HandleScope handle_scope(isolate);
   v8::Context::Scope context_scope(context);
 
@@ -173,7 +137,7 @@ std::string EncodeExceptionAsJSON(v8::Local<v8::Context> context,
 
 void HandleException(v8::Local<v8::Context> context,
                      v8::Local<v8::Value> exception) {
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate *isolate = context->GetIsolate();
 
   // TerminateExecution was called
   if (isolate->IsExecutionTerminating()) {
@@ -193,7 +157,7 @@ void HandleException(v8::Local<v8::Context> context,
     return;
   }
 
-  DenoIsolate* d = DenoIsolate::FromIsolate(isolate);
+  DenoIsolate *d = DenoIsolate::FromIsolate(isolate);
   std::string json_str = EncodeExceptionAsJSON(context, exception);
   CHECK_NOT_NULL(d);
   d->last_exception_ = json_str;
@@ -201,7 +165,7 @@ void HandleException(v8::Local<v8::Context> context,
 
 void HandleExceptionMessage(v8::Local<v8::Context> context,
                             v8::Local<v8::Message> message) {
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate *isolate = context->GetIsolate();
 
   // TerminateExecution was called
   if (isolate->IsExecutionTerminating()) {
@@ -209,9 +173,9 @@ void HandleExceptionMessage(v8::Local<v8::Context> context,
     return;
   }
 
-  DenoIsolate* d = DenoIsolate::FromIsolate(isolate);
+  DenoIsolate *d = DenoIsolate::FromIsolate(isolate);
   std::string json_str = EncodeMessageAsJSON(context, message);
   CHECK_NOT_NULL(d);
   d->last_exception_ = json_str;
 }
-}  // namespace deno
+} // namespace deno
