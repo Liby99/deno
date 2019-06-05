@@ -17,6 +17,8 @@
 #include "third_party/v8/include/v8.h"
 #include "third_party/v8/src/base/logging.h"
 
+#include "third_party/safev8/safev8.h"
+
 #include "deno.h"
 #include "exceptions.h"
 #include "internal.h"
@@ -98,6 +100,9 @@ void PromiseRejectCallback(v8::PromiseRejectMessage promise_reject_message) {
 void Print(const v8::FunctionCallbackInfo<v8::Value>& args) {
   CHECK_GE(args.Length(), 1);
   CHECK_LE(args.Length(), 3);
+
+  // TODO: Get rid of these checks
+
   auto* isolate = args.GetIsolate();
   DenoIsolate* d = DenoIsolate::FromIsolate(isolate);
   auto context = d->context_.Get(d->isolate_);
@@ -153,13 +158,16 @@ void Print(const v8::FunctionCallbackInfo<v8::Value>& args) {
 }
 
 void ErrorToJSON(const v8::FunctionCallbackInfo<v8::Value>& args) {
-  CHECK_EQ(args.Length(), 1);
-  auto* isolate = args.GetIsolate();
-  DenoIsolate* d = DenoIsolate::FromIsolate(isolate);
-  auto context = d->context_.Get(d->isolate_);
-  v8::HandleScope handle_scope(isolate);
-  auto json_string = EncodeExceptionAsJSON(context, args[0]);
-  args.GetReturnValue().Set(v8_str(json_string.c_str()));
+  if (args.Length() == 1) {
+    auto* isolate = args.GetIsolate();
+    DenoIsolate* d = DenoIsolate::FromIsolate(isolate);
+    auto context = d->context_.Get(d->isolate_);
+    v8::HandleScope handle_scope(isolate);
+    auto json_string = EncodeExceptionAsJSON(context, args[0]);
+    args.GetReturnValue().Set(v8_str(json_string.c_str()));
+  } else {
+    args.GetIsolate()->ThrowException(v8_str("Deno.core.errorToJSON expects only a single argument"));
+  }
 }
 
 v8::Local<v8::Uint8Array> ImportBuf(DenoIsolate* d, deno_buf buf) {
@@ -209,11 +217,11 @@ void Recv(const v8::FunctionCallbackInfo<v8::Value>& args) {
     return;
   }
 
-  v8::Local<v8::Value> v = args[0];
-  CHECK(v->IsFunction());
-  v8::Local<v8::Function> func = v8::Local<v8::Function>::Cast(v);
-
-  d->recv_.Reset(isolate, func);
+  safeV8::marshal(isolate, args[0]).onVal([&](v8::Local<v8::Function> func) {
+    d->recv_.Reset(isolate, func);
+  }).onFail([&](v8::Local<v8::Value> exception) {
+    isolate->ThrowException(v8_str("Deno.core.recv expects the first argument to be a function"));
+  });
 }
 
 void Send(const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -235,6 +243,8 @@ void Send(const v8::FunctionCallbackInfo<v8::Value>& args) {
       args[1]->IsArrayBufferView()
           ? PinnedBuf(v8::Local<v8::ArrayBufferView>::Cast(args[1]))
           : PinnedBuf();
+
+  // TODO: Do check of the two buffers
 
   DCHECK_NULL(d->current_args_);
   d->current_args_ = &args;
@@ -375,67 +385,69 @@ void EvalContext(const v8::FunctionCallbackInfo<v8::Value>& args) {
   auto context = d->context_.Get(isolate);
   v8::Context::Scope context_scope(context);
 
-  CHECK(args[0]->IsString());
-  auto source = args[0].As<v8::String>();
+  safeV8::marshal(isolate, args[0]).onVal([&](v8::Local<v8::String> source) {
+    auto output = v8::Array::New(isolate, 2);
+    /**
+     * output[0] = result
+     * output[1] = ErrorInfo | null
+     *   ErrorInfo = {
+     *     thrown: Error | any,
+     *     isNativeError: boolean,
+     *     isCompileError: boolean,
+     *   }
+     */
 
-  auto output = v8::Array::New(isolate, 2);
-  /**
-   * output[0] = result
-   * output[1] = ErrorInfo | null
-   *   ErrorInfo = {
-   *     thrown: Error | any,
-   *     isNativeError: boolean,
-   *     isCompileError: boolean,
-   *   }
-   */
+    v8::TryCatch try_catch(isolate);
 
-  v8::TryCatch try_catch(isolate);
+    auto name = v8_str("<unknown>");
+    v8::ScriptOrigin origin(name);
+    auto script = v8::Script::Compile(context, source, &origin);
 
-  auto name = v8_str("<unknown>");
-  v8::ScriptOrigin origin(name);
-  auto script = v8::Script::Compile(context, source, &origin);
+    if (script.IsEmpty()) {
+      DCHECK(try_catch.HasCaught());
+      auto exception = try_catch.Exception();
 
-  if (script.IsEmpty()) {
-    DCHECK(try_catch.HasCaught());
-    auto exception = try_catch.Exception();
+      output->Set(0, v8::Null(isolate));
 
-    output->Set(0, v8::Null(isolate));
+      auto errinfo_obj = v8::Object::New(isolate);
+      errinfo_obj->Set(v8_str("isCompileError"), v8_bool(true));
+      errinfo_obj->Set(v8_str("isNativeError"),
+                      v8_bool(exception->IsNativeError()));
+      errinfo_obj->Set(v8_str("thrown"), exception);
 
-    auto errinfo_obj = v8::Object::New(isolate);
-    errinfo_obj->Set(v8_str("isCompileError"), v8_bool(true));
-    errinfo_obj->Set(v8_str("isNativeError"),
-                     v8_bool(exception->IsNativeError()));
-    errinfo_obj->Set(v8_str("thrown"), exception);
+      output->Set(1, errinfo_obj);
 
-    output->Set(1, errinfo_obj);
+      args.GetReturnValue().Set(output);
+      return;
+    }
 
+    auto result = script.ToLocalChecked()->Run(context);
+
+    if (result.IsEmpty()) {
+      DCHECK(try_catch.HasCaught());
+      auto exception = try_catch.Exception();
+
+      output->Set(0, v8::Null(isolate));
+
+      auto errinfo_obj = v8::Object::New(isolate);
+      errinfo_obj->Set(v8_str("isCompileError"), v8_bool(false));
+      errinfo_obj->Set(v8_str("isNativeError"),
+                      v8_bool(exception->IsNativeError()));
+      errinfo_obj->Set(v8_str("thrown"), exception);
+
+      output->Set(1, errinfo_obj);
+
+      args.GetReturnValue().Set(output);
+      return;
+    }
+
+    output->Set(0, result.ToLocalChecked());
+    output->Set(1, v8::Null(isolate));
     args.GetReturnValue().Set(output);
-    return;
-  }
 
-  auto result = script.ToLocalChecked()->Run(context);
-
-  if (result.IsEmpty()) {
-    DCHECK(try_catch.HasCaught());
-    auto exception = try_catch.Exception();
-
-    output->Set(0, v8::Null(isolate));
-
-    auto errinfo_obj = v8::Object::New(isolate);
-    errinfo_obj->Set(v8_str("isCompileError"), v8_bool(false));
-    errinfo_obj->Set(v8_str("isNativeError"),
-                     v8_bool(exception->IsNativeError()));
-    errinfo_obj->Set(v8_str("thrown"), exception);
-
-    output->Set(1, errinfo_obj);
-
-    args.GetReturnValue().Set(output);
-    return;
-  }
-
-  output->Set(0, result.ToLocalChecked());
-  output->Set(1, v8::Null(isolate));
-  args.GetReturnValue().Set(output);
+  }).onFail([&](v8::Local<v8::Value> exception) {
+    isolate->ThrowException(exception);
+  });
 }
 
 void InitializeContext(v8::Isolate* isolate, v8::Local<v8::Context> context) {
